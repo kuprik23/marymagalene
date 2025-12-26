@@ -1,0 +1,44 @@
+{
+  "name": "mary-platform",
+  "version": "1.0.0",
+  "description": "Mary - Multi-technology desktop application platform with AI orchestration, CRM, and integrations",
+  "private": true,
+  "workspaces": [
+    "desktop",
+    "services/mcp-server",
+    "services/websocket",
+    "shared/types",
+    "shared/utils"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:desktop\" \"npm run dev:services\"",
+    "dev:desktop": "cd desktop && npm run dev",
+    "dev:services": "docker-compose up",
+    "build": "npm run build:desktop && npm run build:services",
+    "build:desktop": "cd desktop && npm run build",
+    "build:services": "sh scripts/build-services.sh",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "sh scripts/test-unit.sh",
+    "test:integration": "sh scripts/test-integration.sh",
+    "test:e2e": "sh scripts/test-e2e.sh",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "clean": "sh scripts/clean.sh",
+    "setup": "sh scripts/setup-dev.sh"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "concurrently": "^8.0.0",
+    "eslint": "^8.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-react": "^7.33.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

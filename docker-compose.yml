@@ -1,0 +1,310 @@
+version: '3.8'
+
+services:
+  # ========================================
+  # Databases
+  # ========================================
+  
+  postgres:
+    image: postgres:16-alpine
+    container_name: mary-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mary_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mary_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mary_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./shared/schemas/postgresql:/docker-entrypoint-initdb.d
+    networks:
+      - mary-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mary_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:7
+    container_name: mary-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin_password}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:-mary_documents}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - mary-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mary-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mary-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # Message Broker
+  # ========================================
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mary-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - mary-network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # Backend Services
+  # ========================================
+
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: ../../infrastructure/docker/gateway/Dockerfile
+    container_name: mary-gateway
+    environment:
+      - RUST_LOG=info
+      - GATEWAY_PORT=8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  auth-service:
+    build:
+      context: ./services/auth
+      dockerfile: ../../infrastructure/docker/auth/Dockerfile
+    container_name: mary-auth
+    environment:
+      - RUST_LOG=info
+      - AUTH_SERVICE_PORT=8081
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-mary_user}:${POSTGRES_PASSWORD:-mary_password}@postgres:5432/${POSTGRES_DB:-mary_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  crm-service:
+    build:
+      context: ./services/crm
+      dockerfile: ../../infrastructure/docker/crm/Dockerfile
+    container_name: mary-crm
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - SERVER_PORT=8082
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mary_db}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-mary_user}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-mary_password}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  ai-orchestrator:
+    build:
+      context: ./services/ai-orchestrator
+      dockerfile: ../../infrastructure/docker/ai-orchestrator/Dockerfile
+    container_name: mary-ai
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - SERVER_PORT=8083
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mary_db}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  integration-hub:
+    build:
+      context: ./services/integration-hub
+      dockerfile: ../../infrastructure/docker/integration-hub/Dockerfile
+    container_name: mary-integration
+    environment:
+      - KTOR_ENV=dev
+      - SERVER_PORT=8084
+      - DATABASE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mary_db}
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: ./services/payment
+      dockerfile: ../../infrastructure/docker/payment/Dockerfile
+    container_name: mary-payment
+    environment:
+      - RUST_LOG=info
+      - PAYMENT_SERVICE_PORT=8085
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: ./services/mcp-server
+      dockerfile: ../../infrastructure/docker/mcp-server/Dockerfile
+    container_name: mary-mcp
+    environment:
+      - NODE_ENV=development
+      - MCP_SERVER_PORT=8086
+    ports:
+      - "8086:8086"
+    depends_on:
+      - redis
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  analytics-service:
+    build:
+      context: ./services/analytics
+      dockerfile: ../../infrastructure/docker/analytics/Dockerfile
+    container_name: mary-analytics
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - SERVER_PORT=8087
+    ports:
+      - "8087:8087"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  websocket-service:
+    build:
+      context: ./services/websocket
+      dockerfile: ../../infrastructure/docker/websocket/Dockerfile
+    container_name: mary-websocket
+    environment:
+      - NODE_ENV=development
+      - WEBSOCKET_SERVICE_PORT=8088
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379
+    ports:
+      - "8088:8088"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  # ========================================
+  # Monitoring & Observability
+  # ========================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mary-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mary-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./infrastructure/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./infrastructure/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - mary-network
+    restart: unless-stopped
+
+# ========================================
+# Networks
+# ========================================
+
+networks:
+  mary-network:
+    driver: bridge
+
+# ========================================
+# Volumes
+# ========================================
+
+volumes:
+  postgres_data:
+  mongodb_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

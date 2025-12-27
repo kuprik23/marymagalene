@@ -181,3 +181,6 @@ override.tf.json
 # Kubernetes sensitive files
 *-secret.yaml
 *-secrets.yaml
+
+# Exclude nested repository directory
+marymagalene-main/
